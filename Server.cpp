@@ -21,7 +21,9 @@
 
 using namespace std;
 
-void Server::init(){
+fd_set client_socks, tests;
+
+int Server::init(string adress, int port){
     std::cout <<"Server is setting up" <<std::endl;
     
     struct sockaddr_in local_addr;
@@ -30,7 +32,7 @@ void Server::init(){
     if (server_sock <= 0)
     {
         printf("Socket ERR\n");
-        return;
+        return -1;
     }
     
     int param = 1;
@@ -39,14 +41,42 @@ void Server::init(){
     if (return_value == -1){
         
         printf("setsockopt ERR\n");
+        return -1;
     }
     
     
     memset(&local_addr, 0, sizeof(struct sockaddr_in));
     
     local_addr.sin_family = AF_INET;
-    local_addr.sin_port = htons(10000);
-    local_addr.sin_addr.s_addr = INADDR_ANY;
+    //local_addr.sin_port = htons(10000);
+    local_addr.sin_port = htons(port);
+    //local_addr.sin_addr.s_addr = INADDR_ANY;
+    //in_addr_t inAddr = inet_addr(adress.data());
+    //local_addr.sin_addr.s_addr = inAddr;
+    
+    
+    if (adress.compare("localhost") == 0)
+    {
+        local_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    }
+    else if (adress.compare("INADDR_ANY") == 0)
+    {
+        local_addr.sin_addr.s_addr = INADDR_ANY;
+    }
+    else
+    {
+        in_addr_t inAddr = inet_addr(adress.data());
+        if (inAddr == -1)
+        {
+            return -1;
+        }
+        else
+        {
+            local_addr.sin_addr.s_addr = inAddr;
+        }
+    }
+    
+    
     
     return_value = ::bind(server_sock, (struct sockaddr *)&local_addr, sizeof(struct sockaddr_in));
     
@@ -55,16 +85,18 @@ void Server::init(){
     else
     {
         printf("Bind ER\n");
-        return;
+        return -1;
     }
     
     return_value = listen(server_sock, 5);
     
     if (return_value == 0)
         printf("Listen OK\n");
-    else
+    else{
         printf("Listen ERR\n");
-    
+        return -1;
+    }
+    return 1;
     
   
 }
@@ -72,7 +104,6 @@ void Server::listenConnections(){
     
     struct sockaddr_in remote_addr;
     socklen_t remote_addr_len;
-    fd_set client_socks, tests;
     
     FD_ZERO(&client_socks);
     FD_SET(server_sock, &client_socks);
@@ -115,24 +146,53 @@ void Server::listenConnections(){
                     if(a2read > 0){
                         recv(fd, &cbuf, MESSAGE_LENGTH*sizeof(char), 0);
                         
-                        string msg(cbuf);
-                        cout << msg + "\n";
                         
+                        string msg(cbuf);                        
                         MessageManager::resolveMessage(msg, fd);
+                        memset(cbuf, 0, sizeof(cbuf));
                         
                     }
-                    else {//na socketou se stalo něco spatneho
+                    else {//na socketu se stalo něco špatného
+                        GameManager::moveToDisconnected(fd);
                         close(fd);
                         FD_CLR(fd, &client_socks);
-                        printf("klient %d se odpojil a byl odebran ze sady socketu\n", fd);
+                        cout << "na socketu "<< fd <<" se něco stalo..Uzivatel byl presunut do neaktivnich hracu" << endl;
                     }
                 }
-                
             }
         }
-        
     }
-
 }
 
+void *Server::checkConnected(void *args){
+    int id = *(int*)args;
+    Client* c = GameManager::findClient(id);
+    string msg = "PING;";
+    int i = 0;
+    while(c->getExisting()){
+        if(c->isConnected()){
+            i=0;
+            MessageManager::sendMessage(msg, c->getSocketID());
+            c->setConnected(false);
+            sleep(1);
+        }
+        else{
+            GameManager::moveToDisconnected(c->getSocketID());
+            while(!c->isConnected()){
+                i++;
+                cout << "try to reconnect with "<< c->getName() << i << endl;
+                if(i==120){
+                    GameManager::removeClientByName(c->getName());
+                    pthread_exit(0);
+                }
+                sleep(1);
+            }
+        }
+    }
+    return 0;
+}
 
+void Server::closeSocket(int socketID){
+    close(socketID);
+    FD_CLR(socketID, &client_socks);
+}
